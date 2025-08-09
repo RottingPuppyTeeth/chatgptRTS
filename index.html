@@ -1,97 +1,473 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>World Takeover RTS</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Advanced RTS - Multi-Faction with Nukes</title>
 <style>
-    body {
-        margin: 0;
-        background-color: #111;
-        color: white;
-        font-family: Arial, sans-serif;
-        text-align: center;
-    }
-    h1 {
-        margin-top: 10px;
-    }
-    canvas {
-        background-color: #222;
-        display: block;
-        margin: auto;
-        border: 2px solid white;
-    }
-    #stats {
-        margin-top: 10px;
-    }
+  :root {
+    --bg:#071225; --panel:#0f1724; --accent:#ffd166; --muted:#9aa8bd;
+    --player:#06d6a0; --enemy1:#ff6b6b; --enemy2:#f4a261; --neutral:#9aa8bd;
+  }
+  html,body {
+    height:100%; margin:0; background:linear-gradient(180deg,#061027,#04101a);
+    font-family:Inter,Segoe UI,Arial; color:#e6eef6;
+  }
+  .wrap {
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    padding:20px; box-sizing:border-box;
+  }
+  .card {
+    width:1080px; max-width:100%; background:linear-gradient(180deg,rgba(255,255,255,0.02), rgba(0,0,0,0.06));
+    border-radius:10px; padding:12px; box-shadow:0 10px 40px rgba(0,0,0,0.6);
+    display:grid; grid-template-columns:1fr 350px; gap:12px;
+  }
+  canvas {
+    background:#0b2236; border-radius:8px; width:100%; height:680px; display:block;
+  }
+  .sidebar {
+    padding:12px; color:var(--muted);
+  }
+  h1 {
+    color:var(--accent); margin:4px 0; font-size:20px;
+  }
+  .stat {
+    margin:6px 0;
+  }
+  .btn {
+    display:inline-block; padding:8px 14px; border-radius:8px; background:var(--player);
+    color:#022; font-weight:700; border:none; cursor:pointer; margin:6px 6px 6px 0;
+  }
+  .btn-danger {
+    background:#d72631; color:#fff;
+  }
+  .btn-ghost {
+    background:transparent; border:1px solid rgba(255,255,255,0.06); color:var(--muted);
+  }
+  .small {
+    font-size:13px; color:var(--muted);
+  }
+  .footer {
+    grid-column:1/-1; text-align:center; color:var(--muted); font-size:13px; margin-top:6px;
+  }
+  @media(max-width:1100px){
+    .card { grid-template-columns:1fr; }
+    canvas { height:520px; }
+  }
 </style>
 </head>
 <body>
-<h1>World Takeover RTS</h1>
-<canvas id="gameCanvas" width="800" height="500"></canvas>
-<div id="stats">
-    <p>Countries Captured: <span id="capturedCount">0</span> / <span id="totalCount">0</span></p>
-    <p>Click a country to take it over!</p>
+<div class="wrap">
+  <div class="card">
+    <div>
+      <canvas id="game" width="960" height="680"></canvas>
+    </div>
+
+    <div class="sidebar">
+      <h1>Advanced RTS - Multi-Faction with Nukes</h1>
+      <div class="stat"><strong>Your Resources:</strong> <span id="res">0</span></div>
+      <div class="stat"><strong>Your Territories:</strong> <span id="owned">0</span> / <span id="total">0</span></div>
+      <div class="stat"><strong>Time:</strong> <span id="time">0</span>s</div>
+
+      <div style="margin-top:12px">
+        <button id="buildBtn" class="btn">Build Unit (Cost: 10)</button>
+        <button id="nukeBtn" class="btn btn-danger">Launch Nuke (Cost: 50)</button>
+        <button id="speedBtn" class="btn-ghost">Toggle Fast AI</button>
+        <button id="restartBtn" class="btn-ghost">Restart</button>
+      </div>
+
+      <p class="small" style="margin-top:12px">
+        Controls: Click a territory to select it. With your territory selected, click another territory to send units there.<br>
+        Shift + click sends half units.<br>
+        Build units &amp; nukes using resources.<br>
+        Pause/unpause with Spacebar.
+      </p>
+
+      <details style="color:var(--muted); margin-top:12px; font-size:13px;">
+        <summary style="cursor:pointer">Game notes</summary>
+        <ul>
+          <li>Territories produce resources every few seconds.</li>
+          <li>Units move between territories and fight enemies on arrival.</li>
+          <li>Nukes wipe out enemy units &amp; territory control in a small radius.</li>
+          <li>AI factions expand and attack with simple logic.</li>
+        </ul>
+      </details>
+    </div>
+
+    <div class="footer">Made for you — have fun conquering the world!</div>
+  </div>
 </div>
+
 <script>
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
+(() => {
+  const CONFIG = {
+    cols: 12, rows: 8,
+    tileSize: 72,
+    productionInterval: 3.0,
+    unitCost: 10,
+    nukeCost: 50,
+    unitMoveSpeed: 80,
+    aiBuildChance: 0.6,
+    aiTick: 2.5,
+    startResources: 50,
+    nukeRadius: 1.5, // tiles radius for nuke effect
+  };
 
-let countries = [];
-let capturedCount = 0;
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  let W = canvas.width, H = canvas.height;
 
-function initGame() {
-    countries = [];
-    for (let i = 0; i < 20; i++) {
-        countries.push({
-            x: Math.random() * (canvas.width - 50),
-            y: Math.random() * (canvas.height - 50),
-            size: 30,
-            captured: false
+  const resEl = document.getElementById('res'),
+        ownedEl = document.getElementById('owned'),
+        totalEl = document.getElementById('total'),
+        timeEl = document.getElementById('time');
+
+  const buildBtn = document.getElementById('buildBtn'),
+        nukeBtn = document.getElementById('nukeBtn'),
+        speedBtn = document.getElementById('speedBtn'),
+        restartBtn = document.getElementById('restartBtn');
+
+  const FACTIONS = {
+    neutral: 0,
+    player: 1,
+    enemy1: 2,
+    enemy2: 3,
+  };
+
+  const COLORS = {
+    0: '#9aa8bd',   // neutral
+    1: 'var(--player)', // player
+    2: 'var(--enemy1)', // enemy 1
+    3: 'var(--enemy2)', // enemy 2
+  };
+
+  let state = {
+    running: true,
+    time: 0,
+    resources: CONFIG.startResources,
+    tiles: [],
+    units: [],
+    selected: null,
+    paused: false,
+    lastProdAcc: 0,
+    lastAITick: 0,
+    aiFast: false,
+  };
+
+  // Helpers
+  function idx(c, r){ return r * CONFIG.cols + c; }
+  function coord(i){ return { c: i % CONFIG.cols, r: Math.floor(i / CONFIG.cols) }; }
+  function centerOfTile(c, r){
+    const pad = 8;
+    const x = c * CONFIG.tileSize + CONFIG.tileSize / 2 + pad;
+    const y = r * CONFIG.tileSize + CONFIG.tileSize / 2 + pad;
+    return { x, y };
+  }
+
+  // Create map
+  function createTiles(){
+    const tiles = [];
+    for(let r=0; r<CONFIG.rows; r++){
+      for(let c=0; c<CONFIG.cols; c++){
+        let owner = FACTIONS.neutral;
+        // start with 2 enemy bases and 1 player base roughly spaced
+        if((r === 1 && c === 1)) owner = FACTIONS.enemy1;
+        else if((r === CONFIG.rows - 2 && c === CONFIG.cols - 2)) owner = FACTIONS.enemy2;
+        else if((r === Math.floor(CONFIG.rows / 2) && c === Math.floor(CONFIG.cols / 2))) owner = FACTIONS.player;
+
+        tiles.push({
+          id: idx(c,r),
+          owner,
+          units: owner === FACTIONS.neutral ? 0 : 5,
+          production: 1 + Math.floor(Math.random() * 2),
+          x: c * CONFIG.tileSize + 8,
+          y: r * CONFIG.tileSize + 8,
+          w: CONFIG.tileSize - 4,
+          h: CONFIG.tileSize - 4,
+          c, r,
         });
+      }
     }
-    document.getElementById('totalCount').textContent = countries.length;
-}
+    return tiles;
+  }
 
-function drawGame() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (let country of countries) {
-        ctx.beginPath();
-        ctx.arc(country.x, country.y, country.size, 0, Math.PI * 2);
-        ctx.fillStyle = country.captured ? "red" : "green";
-        ctx.fill();
-        ctx.strokeStyle = "white";
-        ctx.stroke();
-    }
-}
+  // Spawn moving units between tiles
+  function spawnMovingUnits(fromTile, toTile, owner, count){
+    if(count <= 0) return;
+    const fromC = fromTile.x + fromTile.w / 2;
+    const fromR = fromTile.y + fromTile.h / 2;
+    const toC = toTile.x + toTile.w / 2;
+    const toR = toTile.y + toTile.h / 2;
+    const dx = toC - fromC, dy = toR - fromR;
+    const dist = Math.hypot(dx, dy);
+    const dirx = dx / dist, diry = dy / dist;
+    const speed = CONFIG.unitMoveSpeed;
+    state.units.push({
+      x: fromC, y: fromR,
+      vx: dirx * speed, vy: diry * speed,
+      targetTile: toTile.id,
+      owner, count,
+      arrived: false,
+    });
+  }
 
-canvas.addEventListener('click', function(event) {
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-    for (let country of countries) {
-        const dx = mouseX - country.x;
-        const dy = mouseY - country.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance < country.size && !country.captured) {
-            country.captured = true;
-            capturedCount++;
-            document.getElementById('capturedCount').textContent = capturedCount;
-            if (capturedCount === countries.length) {
-                alert("You have taken over the world!");
-            }
+  // Resolve arrival of units on tile
+  function resolveArrival(moving){
+    const tile = state.tiles[moving.targetTile];
+    if(!tile) return;
+    if(tile.owner === moving.owner || tile.owner === FACTIONS.neutral){
+      // friendly or neutral tile
+      if(tile.owner !== moving.owner){
+        // capturing neutral tile
+        if(tile.units === 0){
+          tile.owner = moving.owner;
+          tile.units = moving.count;
+        } else {
+          // fight neutral defenders
+          const remaining = tile.units - moving.count;
+          if(remaining > 0){
+            tile.units = remaining;
+          } else {
+            tile.owner = moving.owner;
+            tile.units = Math.abs(remaining);
+          }
         }
+      } else {
+        tile.units += moving.count;
+      }
+    } else {
+      // enemy tile - simple combat
+      const result = tile.units - moving.count;
+      if(result > 0){
+        tile.units = result; // defenders hold
+      } else {
+        tile.owner = moving.owner;
+        tile.units = Math.abs(result);
+      }
     }
-});
+  }
 
-function gameLoop() {
-    drawGame();
-    requestAnimationFrame(gameLoop);
-}
+  // Launch nuke at tile - wipes out enemy units & ownership in radius
+  function launchNuke(centerTile){
+    if(state.resources < CONFIG.nukeCost) {
+      alert("Not enough resources to launch a nuke!");
+      return false;
+    }
+    state.resources -= CONFIG.nukeCost;
 
-initGame();
-gameLoop();
-</script>
-</body>
-</html>
+    const center = coord(centerTile.id);
+    let nukedCount = 0;
+
+    state.tiles.forEach(tile => {
+      const dist = Math.hypot(tile.c - center.c, tile.r - center.r);
+      if(dist <= CONFIG.nukeRadius){
+        if(tile.owner !== FACTIONS.player){
+          tile.owner = FACTIONS.neutral;
+          tile.units = 0;
+          nukedCount++;
+        }
+      }
+    });
+
+    if(nukedCount > 0) {
+      alert(`Nuke launched! Cleared ${nukedCount} enemy territories.`);
+      return true;
+    } else {
+      alert("Nuke had no effect (no enemy territory in range).");
+      return false;
+    }
+  }
+
+  // AI logic for each enemy faction
+  function aiLogic(factionId){
+    state.tiles.forEach(tile => {
+      if(tile.owner !== factionId) return;
+
+      // Build units sometimes
+      if(Math.random() < 0.06 * (state.aiFast ? 1.8 : 1.0)){
+        tile.units += 1;
+      }
+
+      // Attack or expand if enough units
+      if(tile.units >= 5 && Math.random() < 0.35 * (state.aiFast ? 1.8 : 1.0)){
+        // find nearest non-faction tile
+        const tpos = {c: tile.c, r: tile.r};
+        let best = null, bestDist = 1e9;
+        state.tiles.forEach(t => {
+          if(t.owner === factionId) return;
+          const d = Math.hypot(t.c - tpos.c, t.r - tpos.r);
+          if(d < bestDist){
+            bestDist = d;
+            best = t;
+          }
+        });
+        if(best){
+          const movingCount = Math.floor(tile.units / 2);
+          tile.units -= movingCount;
+          spawnMovingUnits(tile, best, factionId, movingCount);
+        }
+      }
+    });
+  }
+
+  // Input handling
+  canvas.addEventListener('mousedown', (ev) => {
+    if(state.paused) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (ev.clientY - rect.top) * (canvas.height / rect.height);
+
+    for(const t of state.tiles){
+      if(mx >= t.x && mx <= t.x + t.w && my >= t.y && my <= t.y + t.h){
+        if(state.selected === t.id){
+          state.selected = null;
+          return;
+        }
+        if(state.selected !== null){
+          const sel = state.tiles[state.selected];
+          if(sel && sel.owner === FACTIONS.player){
+            const count = ev.shiftKey ? Math.floor(sel.units / 2) : sel.units;
+            if(count > 0){
+              sel.units -= count;
+              spawnMovingUnits(sel, t, FACTIONS.player, count);
+              state.selected = null;
+              return;
+            }
+          }
+        }
+        if(t.owner === FACTIONS.player) state.selected = t.id;
+        else state.selected = null;
+        return;
+      }
+    }
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if(e.code === 'Space'){
+      state.paused = !state.paused;
+      e.preventDefault();
+    }
+  });
+
+  // Button events
+  buildBtn.onclick = () => {
+    if(state.selected === null) return;
+    const tile = state.tiles[state.selected];
+    if(tile && tile.owner === FACTIONS.player && state.resources >= CONFIG.unitCost){
+      state.resources -= CONFIG.unitCost;
+      tile.units++;
+    }
+  };
+
+  nukeBtn.onclick = () => {
+    if(state.selected === null) {
+      alert("Select one of your territories to launch a nuke there.");
+      return;
+    }
+    const tile = state.tiles[state.selected];
+    if(tile && tile.owner === FACTIONS.player){
+      launchNuke(tile);
+    }
+  };
+
+  speedBtn.onclick = () => {
+    state.aiFast = !state.aiFast;
+    speedBtn.textContent = state.aiFast ? "Fast AI: ON" : "Toggle Fast AI";
+  };
+
+  restartBtn.onclick = () => {
+    init();
+  };
+
+  // Game loop
+  let lastTime = performance.now();
+
+  function gameStep(now){
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if(!state.paused){
+      state.time += dt;
+
+      // Produce resources for player
+      state.lastProdAcc += dt;
+      if(state.lastProdAcc >= CONFIG.productionInterval){
+        let prod = 0;
+        state.tiles.forEach(t => {
+          if(t.owner === FACTIONS.player){
+            prod += t.production;
+          }
+        });
+        state.resources += prod;
+        state.lastProdAcc = 0;
+      }
+
+      // Move units
+      for(let i = state.units.length - 1; i >= 0; i--){
+        const u = state.units[i];
+        u.x += u.vx * dt;
+        u.y += u.vy * dt;
+        const target = state.tiles[u.targetTile];
+        if(target){
+          const cx = target.x + target.w / 2;
+          const cy = target.y + target.h / 2;
+          if(Math.hypot(u.x - cx, u.y - cy) < 8 + (u.count * 0.2)){
+            resolveArrival(u);
+            state.units.splice(i, 1);
+          }
+        } else {
+          state.units.splice(i, 1);
+        }
+      }
+
+      // AI logic ticks
+      state.lastAITick += dt;
+      if(state.lastAITick >= CONFIG.aiTick){
+        aiLogic(FACTIONS.enemy1);
+        aiLogic(FACTIONS.enemy2);
+        state.lastAITick = 0;
+      }
+    }
+
+    render();
+    checkWinLoss();
+    requestAnimationFrame(gameStep);
+  }
+
+  requestAnimationFrame(gameStep);
+
+  // Rendering
+  function render(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = '#052032';
+    ctx.fillRect(0,0,W,H);
+
+    // Draw tiles
+    state.tiles.forEach(t=>{
+      let baseColor = COLORS[t.owner] || '#777';
+      if(baseColor.startsWith('var(')){
+        // CSS var fallback
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(baseColor.slice(4, -1)) || '#777';
+      } else ctx.fillStyle = baseColor;
+
+      // tile background
+      ctx.fillStyle = shadeColor(baseColor, -10);
+
+      roundRect(ctx, t.x, t.y, t.w, t.h, 6, true, false);
+
+      // border
+      ctx.strokeStyle = shadeColor(baseColor, -40);
+      ctx.lineWidth = 2;
+      roundRect(ctx, t.x+1, t.y+1, t.w-2, t.h-2, 6, false, true);
+
+      // Units & production text
+      ctx.fillStyle = '#e6eef6';
+      ctx.font = '14px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText('U:' + t.units, t.x + 8, t.y + 18);
+      ctx.fillText('P:' + t.production, t.x + 8, t.y + 36);
+
+      // Highlight selected player tile
+      if(state.selected === t.id){
+        ctx.strokeStyle = 'var(--accent)';
+        ctx.lineWidth = 3;
+        roundRect(ctx, t.x+3, t.y+3, t.w-6, t.h-6, 6, false,
